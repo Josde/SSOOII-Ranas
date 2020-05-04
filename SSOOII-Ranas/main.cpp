@@ -8,7 +8,7 @@
 #define MIN_VELOCIDAD (const int)0
 #define MAX_VELOCIDAD (const int)1000
 #define MIN_TMEDIO (const int)1
-#define NUM_PROCESOS (const int)25
+#define TIEMPO (const int)5000
 #define MOVIMIENTO_TRONCOS (const int)0
 #define FILA_ULTIMO_TRONCO (const int)10
 
@@ -24,16 +24,28 @@ void(*PRINTMSG)(char*);
 
 void func_criar(int i);
 DWORD WINAPI bucleRanasHija(LPVOID i);
+DWORD WINAPI manejadorTiempo(LPVOID t);
 
-HANDLE semProcesos;
+HANDLE memCompartida;
 HANDLE semNacidas;
 HANDLE semSalvadas;
 HANDLE semPerdidas;
+HANDLE eventoFinalizacion;
 CRITICAL_SECTION SC_PRIMERMOVIMIENTO[4];
 CRITICAL_SECTION SC_SALTORANAS;
 HANDLE semPosiciones;
 FARPROC PAUSA;
 FARPROC FINRANAS;
+
+typedef struct {
+	int x, y;
+} pos;
+
+typedef struct {
+	long contadorNacidas;
+	long contadorSalvadas;
+	long contadorMuertas;
+} datosCompartidos;
 
 int main(int argc, char* argv[])
 {
@@ -42,6 +54,11 @@ int main(int argc, char* argv[])
 	int vectorTroncos[7] = { 11,11,11,11,11,11,11 };
 	int vectorAgua[7] = { 7,6,5,4,3,2,1 };
 	int vectorDirs[7] = { DERECHA,IZQUIERDA,DERECHA,IZQUIERDA,DERECHA,IZQUIERDA,DERECHA };
+	datosCompartidos * puntero = NULL;
+	datosCompartidos datosCompartida;
+	datosCompartida.contadorSalvadas = 0;
+	datosCompartida.contadorMuertas = 0;
+	datosCompartida.contadorNacidas = 0;
 	srand(time(NULL));
 	if (argc <= 2) {
 		printf("Los argumentos son erroneos. Asegurate de llamarlo de la siguiente manera: \n");
@@ -62,12 +79,23 @@ int main(int argc, char* argv[])
 		return 7;
 	}
 
-
-	semProcesos = CreateSemaphore(NULL, NUM_PROCESOS - 1, NUM_PROCESOS - 1, "SEMAFORO PROCESOS");
+	//INICIALIZACION IPCS
 	InitializeCriticalSection(&SC_SALTORANAS);
+	eventoFinalizacion = CreateEvent(NULL, TRUE, FALSE, NULL);
 	for (int i = 0; i < 4; i++) {
 		InitializeCriticalSection(&(SC_PRIMERMOVIMIENTO[i]));
 	}
+	memCompartida = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(datosCompartidos), "MemoriaCompartida1");
+	if (memCompartida == NULL){
+		PERROR("main: CreateFileMapping memCompartida");
+		return -8;
+	}
+
+	puntero = (datosCompartidos *)MapViewOfFile(memCompartida, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(datosCompartida));
+	if (puntero != 0) {
+		CopyMemory(puntero, &datosCompartida, sizeof(datosCompartida));
+	}
+	//CARGA DE LIBRERIA Y FUNCIONES
 	HINSTANCE libreria = LoadLibrary("ranas.dll");
 	if (libreria == NULL) {
 		PERROR("main: LoadLibrary");
@@ -131,20 +159,39 @@ int main(int argc, char* argv[])
 	}
 
 	INICIORANAS(velocidad, vectorTroncos, vectorAgua, vectorDirs, tmedio, func_criar);
+	CreateThread(NULL, 0, manejadorTiempo, (LPVOID)TIEMPO, NULL, NULL);
+	WaitForSingleObject(eventoFinalizacion, INFINITE);
+	FINRANAS();
+	if (puntero != NULL) {
+		COMPROBARESTADISTICAS(puntero->contadorNacidas, puntero->contadorSalvadas, puntero->contadorMuertas);
+	}
+	UnmapViewOfFile(memCompartida);
+	CloseHandle(memCompartida);
+	FreeLibrary(libreria);
+	return 0;
+}
 
-	
-	
-	while(1);
+DWORD WINAPI manejadorTiempo(LPVOID t) {
+	Sleep((DWORD)t);
+	SetEvent(eventoFinalizacion);
 	return 0;
 }
 
 void func_criar(int i) {
-	WaitForSingleObject(semProcesos, INFINITE);
+	HANDLE memoria = OpenFileMapping(FILE_MAP_ALL_ACCESS, NULL, "MemoriaCompartida1");
+	datosCompartidos* puntero = (datosCompartidos *)MapViewOfFile(memoria, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(datosCompartidos));
+	if (WaitForSingleObject(eventoFinalizacion, 0) == WAIT_OBJECT_0) { // La macro indica que el evento está señalado
+		ExitThread(0);
+	}
+	//WaitForSingleObject(semProcesos, INFINITE);
 	EnterCriticalSection(&(SC_PRIMERMOVIMIENTO[i]));
 	if (PARTORANAS(i)) {
 		HANDLE hija = CreateThread(NULL, 0, bucleRanasHija, (LPVOID)i, 0, NULL);
 		if (hija == NULL) {
 			PERROR("func_criar: CreateThread: hija[%d]", i);
+		}
+		if (puntero != NULL) {
+			puntero->contadorNacidas += 1;
 		}
 	}
 }
@@ -155,7 +202,13 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 	BOOL esPrimerMovimiento = TRUE;
 	int rnd;
 	int dirs[] = { IZQUIERDA, DERECHA };
+	HANDLE memoria = OpenFileMapping(FILE_MAP_ALL_ACCESS, NULL, "MemoriaCompartida1");
+	datosCompartidos* puntero = (datosCompartidos*)MapViewOfFile(memoria, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(datosCompartidos));
 	while (1) {
+		if (WaitForSingleObject(eventoFinalizacion, 0) == WAIT_OBJECT_0) { // La macro indica que el evento está señalado
+			ExitThread(0);
+		}
+
 		rnd = rand() % 2;
 		EnterCriticalSection(&SC_SALTORANAS);
 		if (PUEDOSALTAR(posX, posY, ARRIBA)) {
@@ -196,7 +249,10 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 			PAUSA();
 		}
 		if (posY > FILA_ULTIMO_TRONCO) {
-			ReleaseSemaphore(semProcesos, 1, NULL);
+			//ReleaseSemaphore(semProcesos, 1, NULL);
+			if (puntero != NULL) {
+				puntero->contadorSalvadas += 1;
+			}
 			ExitThread(0);
 		}
 	}
