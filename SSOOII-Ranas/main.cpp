@@ -29,7 +29,6 @@ void func_criar(int i);
 DWORD WINAPI bucleRanasHija(LPVOID i);
 DWORD WINAPI manejadorTiempo(LPVOID t);
 DWORD WINAPI manejadorTroncos(LPVOID i);
-HANDLE memCompartida;
 HANDLE semNacidas;
 HANDLE semSalvadas;
 HANDLE semPerdidas;
@@ -55,18 +54,19 @@ typedef struct {
 								//De esta manera, nos libramos de hacer mallocs y otros problemas. 
 } datosCompartidos;
 int vectorDirs[7] = { DERECHA,IZQUIERDA,DERECHA,IZQUIERDA,DERECHA,IZQUIERDA,DERECHA };
+datosCompartidos datosCompartida;
+
 int main(int argc, char* argv[])
 {
 	int velocidad, tmedio;
 	//int vectorTroncos[7] = { 6,7,8,9,10,11,12 };
 	int vectorTroncos[7] = { 11,11,11,11,11,11,11 };
 	int vectorAgua[7] = { 7,6,5,4,3,2,1 };
-	
-	datosCompartidos * puntero = NULL;
-	datosCompartidos datosCompartida;
+
 	datosCompartida.contadorSalvadas = 0;
 	datosCompartida.contadorMuertas = 0;
 	datosCompartida.contadorNacidas = 0;
+	
 	for (int i = 0; i < 880; i++) {
 		datosCompartida.arrayPosiciones[i].x = -1;
 		datosCompartida.arrayPosiciones[i].y = -1;
@@ -100,16 +100,8 @@ int main(int argc, char* argv[])
 	for (int i = 0; i < 4; i++) {
 		InitializeCriticalSection(&(SC_PRIMERMOVIMIENTO[i]));
 	}
-	memCompartida = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(datosCompartidos), "MemoriaCompartida1");
-	if (memCompartida == NULL){
-		PERROR("main: CreateFileMapping memCompartida");
-		return -8;
-	}
 
-	puntero = (datosCompartidos *)MapViewOfFile(memCompartida, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(datosCompartida));
-	if (puntero != 0) {
-		CopyMemory(puntero, &datosCompartida, sizeof(datosCompartida));
-	}
+
 	//CARGA DE LIBRERIA Y FUNCIONES
 	HINSTANCE libreria = LoadLibrary("ranas.dll");
 	if (libreria == NULL) {
@@ -178,31 +170,26 @@ int main(int argc, char* argv[])
 	CreateThread(NULL, 0, manejadorTroncos, NULL, NULL, NULL);
 	WaitForSingleObject(eventoFinalizacion, INFINITE);
 	FINRANAS();
-	if (puntero != NULL) {
-		COMPROBARESTADISTICAS(puntero->contadorNacidas, puntero->contadorSalvadas, puntero->contadorMuertas);
-	}
-	UnmapViewOfFile(memCompartida);
-	CloseHandle(memCompartida);
+	COMPROBARESTADISTICAS(datosCompartida.contadorNacidas, datosCompartida.contadorSalvadas, datosCompartida.contadorMuertas);
+
 	FreeLibrary(libreria);
 	return 0;
 }
 DWORD WINAPI manejadorTroncos(LPVOID i) {
 	int j, ultimoEvento = 0, k;
-	HANDLE memoria = OpenFileMapping(FILE_MAP_ALL_ACCESS, NULL, "MemoriaCompartida1");
-	datosCompartidos* puntero = (datosCompartidos*)MapViewOfFile(memoria, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(datosCompartidos));
 	while (1) {
 		for (j = 0; j < 7; j++) {
 			EnterCriticalSection(&SC_SALTORANAS);
 			for (k = 0; k < 880; k++) {
-				if (puntero->arrayPosiciones[k].x < 0 || puntero->arrayPosiciones[k].y < 0) {
+				if (datosCompartida.arrayPosiciones[k].x < 0 || datosCompartida.arrayPosiciones[k].y < 0) {
 					continue;
 				}
-				if (puntero->arrayPosiciones[k].y == (6 - j) + FILA_PRIMER_TRONCO) {
+				if (datosCompartida.arrayPosiciones[k].y == (6 - j) + FILA_PRIMER_TRONCO) {
 					if (vectorDirs[6 - j] == DERECHA) {
-						puntero->arrayPosiciones[k].x += 1;
+						datosCompartida.arrayPosiciones[k].x += 1;
 					}
 					else {
-						puntero->arrayPosiciones[k].x -= 1;
+						datosCompartida.arrayPosiciones[k].x -= 1;
 					}
 				}
 			}
@@ -219,8 +206,6 @@ DWORD WINAPI manejadorTiempo(LPVOID t) {
 }
 
 void func_criar(int i) {
-	HANDLE memoria = OpenFileMapping(FILE_MAP_ALL_ACCESS, NULL, "MemoriaCompartida1");
-	datosCompartidos* puntero = (datosCompartidos *)MapViewOfFile(memoria, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(datosCompartidos));
 	if (WaitForSingleObject(eventoFinalizacion, 0) == WAIT_OBJECT_0) { // La macro indica que el evento está señalado
 		ExitThread(0);
 	}
@@ -231,9 +216,7 @@ void func_criar(int i) {
 		if (hija == NULL) {
 			PERROR("func_criar: CreateThread: hija[%d]", i);
 		}
-		if (puntero != NULL) {
-			puntero->contadorNacidas += 1;
-		}
+		datosCompartida.contadorNacidas += 1;
 	}
 }
 
@@ -243,15 +226,13 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 	BOOL esPrimerMovimiento = TRUE;
 	int rnd;
 	int filaTronco;
-	int indicePosicion;
+	int indicePosicion = 0;
 	int dirs[] = { IZQUIERDA, DERECHA };
-	HANDLE memoria = OpenFileMapping(FILE_MAP_ALL_ACCESS, NULL, "MemoriaCompartida1");
-	datosCompartidos* puntero = (datosCompartidos*)MapViewOfFile(memoria, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(datosCompartidos));
 	for (int i = 0; i < 880; i++) {
-		if (puntero->arrayPosiciones[i].x < 0 || puntero->arrayPosiciones[i].y < 0) {
+		if (datosCompartida.arrayPosiciones[i].x < 0 || datosCompartida.arrayPosiciones[i].y < 0) {
 			indicePosicion = i;
-			puntero->arrayPosiciones[i].x = posX;
-			puntero->arrayPosiciones[i].y = posY;
+			datosCompartida.arrayPosiciones[i].x = posX;
+			datosCompartida.arrayPosiciones[i].y = posY;
 			break;
 		}
 	}
@@ -263,43 +244,43 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 
 		rnd = rand() % 2;
 		EnterCriticalSection(&SC_SALTORANAS);
-		if (puntero->arrayPosiciones[indicePosicion].x < POSX_MIN || puntero->arrayPosiciones[indicePosicion].x > POSX_MAX) {
-			puntero->arrayPosiciones[indicePosicion].x = -1;
-			puntero->arrayPosiciones[indicePosicion].y = -1;
+		if (datosCompartida.arrayPosiciones[indicePosicion].x < POSX_MIN || datosCompartida.arrayPosiciones[indicePosicion].x > POSX_MAX) {
+			datosCompartida.arrayPosiciones[indicePosicion].x = -1;
+			datosCompartida.arrayPosiciones[indicePosicion].y = -1;
 			LeaveCriticalSection(&SC_SALTORANAS);
 			WaitForSingleObject(semPerdidas, INFINITE);
-			puntero->contadorMuertas += 1;
+			datosCompartida.contadorMuertas += 1;
 			ReleaseSemaphore(semPerdidas, 1, NULL);
 			ExitThread(0);
 		}
-		if (PUEDOSALTAR(puntero->arrayPosiciones[indicePosicion].x, puntero->arrayPosiciones[indicePosicion].y, ARRIBA)) {
-			AVANCERANAINI(puntero->arrayPosiciones[indicePosicion].x, puntero->arrayPosiciones[indicePosicion].y);
-			AVANCERANA(&(puntero->arrayPosiciones[indicePosicion].x), &puntero->arrayPosiciones[indicePosicion].y, ARRIBA);
+		if (PUEDOSALTAR(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y, ARRIBA)) {
+			AVANCERANAINI(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y);
+			AVANCERANA(&(datosCompartida.arrayPosiciones[indicePosicion].x), &datosCompartida.arrayPosiciones[indicePosicion].y, ARRIBA);
 			LeaveCriticalSection(&SC_SALTORANAS);
 			PAUSA();
-			AVANCERANAFIN(puntero->arrayPosiciones[indicePosicion].x, puntero->arrayPosiciones[indicePosicion].y);
+			AVANCERANAFIN(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y);
 			if (esPrimerMovimiento) {
 				esPrimerMovimiento = FALSE;
 				LeaveCriticalSection(&(SC_PRIMERMOVIMIENTO[(int)i]));
 			}
 		}
-		else if (PUEDOSALTAR(puntero->arrayPosiciones[indicePosicion].x, puntero->arrayPosiciones[indicePosicion].y, dirs[rnd])) {
-			AVANCERANAINI(puntero->arrayPosiciones[indicePosicion].x, puntero->arrayPosiciones[indicePosicion].y);
-			AVANCERANA(&(puntero->arrayPosiciones[indicePosicion].x), &puntero->arrayPosiciones[indicePosicion].y, dirs[rnd]);
+		else if (PUEDOSALTAR(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y, dirs[rnd])) {
+			AVANCERANAINI(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y);
+			AVANCERANA(&(datosCompartida.arrayPosiciones[indicePosicion].x), &datosCompartida.arrayPosiciones[indicePosicion].y, dirs[rnd]);
 			LeaveCriticalSection(&SC_SALTORANAS);
 			PAUSA();
-			AVANCERANAFIN(puntero->arrayPosiciones[indicePosicion].x, puntero->arrayPosiciones[indicePosicion].y);
+			AVANCERANAFIN(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y);
 			if (esPrimerMovimiento) {
 				esPrimerMovimiento = FALSE;
 				LeaveCriticalSection(&(SC_PRIMERMOVIMIENTO[(int)i]));
 			}
 		}
-		else if (PUEDOSALTAR(puntero->arrayPosiciones[indicePosicion].x, puntero->arrayPosiciones[indicePosicion].y, dirs[1 - rnd])) {
-			AVANCERANAINI(puntero->arrayPosiciones[indicePosicion].x, puntero->arrayPosiciones[indicePosicion].y);
-			AVANCERANA(&(puntero->arrayPosiciones[indicePosicion].x), &puntero->arrayPosiciones[indicePosicion].y, dirs[1 - rnd]);
+		else if (PUEDOSALTAR(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y, dirs[1 - rnd])) {
+			AVANCERANAINI(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y);
+			AVANCERANA(&(datosCompartida.arrayPosiciones[indicePosicion].x), &datosCompartida.arrayPosiciones[indicePosicion].y, dirs[1 - rnd]);
 			LeaveCriticalSection(&SC_SALTORANAS);
 			PAUSA();
-			AVANCERANAFIN(puntero->arrayPosiciones[indicePosicion].x, puntero->arrayPosiciones[indicePosicion].y);
+			AVANCERANAFIN(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y);
 			if (esPrimerMovimiento) {
 				esPrimerMovimiento = FALSE;
 				LeaveCriticalSection((&SC_PRIMERMOVIMIENTO[(int)i]));
@@ -309,11 +290,9 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 			LeaveCriticalSection(&SC_SALTORANAS);
 			PAUSA();
 		}
-		if (puntero->arrayPosiciones[indicePosicion].y > FILA_ULTIMO_TRONCO) {
+		if (datosCompartida.arrayPosiciones[indicePosicion].y > FILA_ULTIMO_TRONCO) {
 			//ReleaseSemaphore(semProcesos, 1, NULL);
-			if (puntero != NULL) {
-				puntero->contadorSalvadas += 1;
-			}
+			datosCompartida.contadorSalvadas += 1;
 			ExitThread(0);
 		}
 	}
