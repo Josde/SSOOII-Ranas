@@ -15,6 +15,7 @@
 #define NUM_PROCESOS (const int)24
 #define POSX_MAX (const int)79
 #define POSX_MIN (const int)0
+#define NUM_TRONCOS (const int)7
 BOOL(*AVANCERANA)(int*, int*, int);
 BOOL(*AVANCERANAFIN)(int, int);
 BOOL(*AVANCERANAINI) (int, int);
@@ -37,6 +38,7 @@ HANDLE eventoMovimientoTronco[7];
 CRITICAL_SECTION SC_PRIMERMOVIMIENTO[4];
 CRITICAL_SECTION SC_SALTORANAS;
 HANDLE semPosiciones;
+HANDLE semProcesos;
 FARPROC PAUSA;
 FARPROC FINRANAS;
 
@@ -50,18 +52,25 @@ typedef struct {
 	long contadorNacidas;
 	long contadorSalvadas;
 	long contadorMuertas;
-	pos arrayPosiciones[880]; //Guardamos suficientes posiciones para el supuesto de un tablero ABSOLUTAMENTE lleno.
-								//De esta manera, nos libramos de hacer mallocs y otros problemas. 
+	pos arrayPosiciones[NUM_PROCESOS]; //Guardamos suficientes posiciones para el supuesto de un tablero ABSOLUTAMENTE lleno.
+								//De esta manera, nos libramos de hacer mallocs y otros problemas.
 } datosCompartidos;
 int vectorDirs[7] = { DERECHA,IZQUIERDA,DERECHA,IZQUIERDA,DERECHA,IZQUIERDA,DERECHA };
 datosCompartidos datosCompartida;
 
 int main(int argc, char* argv[])
-{
-	int velocidad, tmedio;
+{	
+	int direcciones[2] = { DERECHA, IZQUIERDA };
 	//int vectorTroncos[7] = { 6,7,8,9,10,11,12 };
 	int vectorTroncos[7] = { 11,11,11,11,11,11,11 };
 	int vectorAgua[7] = { 7,6,5,4,3,2,1 };
+	int velocidad, tmedio;
+
+	srand(time(NULL));
+	for(int x = 0; x < NUM_TRONCOS; x++){
+		vectorTroncos[x] = rand() % 11 + 1;
+		vectorDirs[x] = direcciones[rand() % 2];
+	}
 
 	datosCompartida.contadorSalvadas = 0;
 	datosCompartida.contadorMuertas = 0;
@@ -71,7 +80,6 @@ int main(int argc, char* argv[])
 		datosCompartida.arrayPosiciones[i].x = -1;
 		datosCompartida.arrayPosiciones[i].y = -1;
 	}
-	srand(time(NULL));
 	if (argc <= 2) {
 		printf("Los argumentos son erroneos. Asegurate de llamarlo de la siguiente manera: \n");
 		printf("batracios.exe <velocidad> <tmedio>\n");
@@ -180,7 +188,7 @@ DWORD WINAPI manejadorTroncos(LPVOID i) {
 	while (1) {
 		for (j = 0; j < 7; j++) {
 			EnterCriticalSection(&SC_SALTORANAS);
-			for (k = 0; k < 880; k++) {
+			for (k = 0; k < NUM_PROCESOS; k++) {
 				if (datosCompartida.arrayPosiciones[k].x < 0 || datosCompartida.arrayPosiciones[k].y < 0) {
 					continue;
 				}
@@ -209,14 +217,16 @@ void func_criar(int i) {
 	if (WaitForSingleObject(eventoFinalizacion, 0) == WAIT_OBJECT_0) { // La macro indica que el evento está señalado
 		ExitThread(0);
 	}
-	//WaitForSingleObject(semProcesos, INFINITE);
+	WaitForSingleObject(semProcesos, INFINITE);
 	EnterCriticalSection(&(SC_PRIMERMOVIMIENTO[i]));
 	if (PARTORANAS(i)) {
 		HANDLE hija = CreateThread(NULL, 0, bucleRanasHija, (LPVOID)i, 0, NULL);
 		if (hija == NULL) {
 			PERROR("func_criar: CreateThread: hija[%d]", i);
 		}
+		WaitForSingleObject(semNacidas, INFINITE);
 		datosCompartida.contadorNacidas += 1;
+		ReleaseSemaphore(semNacidas, 1, NULL);
 	}
 }
 
@@ -228,7 +238,7 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 	int filaTronco;
 	int indicePosicion = 0;
 	int dirs[] = { IZQUIERDA, DERECHA };
-	for (int i = 0; i < 880; i++) {
+	for (int i = 0; i < NUM_PROCESOS; i++) {
 		if (datosCompartida.arrayPosiciones[i].x < 0 || datosCompartida.arrayPosiciones[i].y < 0) {
 			indicePosicion = i;
 			datosCompartida.arrayPosiciones[i].x = posX;
@@ -239,6 +249,9 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 	while (1) {
 		if (WaitForSingleObject(eventoFinalizacion, 0) == WAIT_OBJECT_0) { // La macro indica que el evento está señalado
 			//Además, esperar 0 milisegundos hace que se compruebe el estado del evento y se resuma la ejecución automáticamente.
+			ReleaseSemaphore(semProcesos, 1, NULL);
+			datosCompartida.arrayPosiciones[indicePosicion].x = -1;
+			datosCompartida.arrayPosiciones[indicePosicion].y = -1;
 			ExitThread(0);
 		}
 
@@ -251,6 +264,7 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 			WaitForSingleObject(semPerdidas, INFINITE);
 			datosCompartida.contadorMuertas += 1;
 			ReleaseSemaphore(semPerdidas, 1, NULL);
+			ReleaseSemaphore(semProcesos, 1, NULL);
 			ExitThread(0);
 		}
 		if (PUEDOSALTAR(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y, ARRIBA)) {
@@ -291,8 +305,12 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 			PAUSA();
 		}
 		if (datosCompartida.arrayPosiciones[indicePosicion].y > FILA_ULTIMO_TRONCO) {
-			//ReleaseSemaphore(semProcesos, 1, NULL);
+			WaitForSingleObject(semSalvadas, INFINITE);
 			datosCompartida.contadorSalvadas += 1;
+			ReleaseSemaphore(semSalvadas, 1, NULL);
+			datosCompartida.arrayPosiciones[indicePosicion].x = -1;
+			datosCompartida.arrayPosiciones[indicePosicion].y = -1;
+			ReleaseSemaphore(semProcesos, 1, NULL);
 			ExitThread(0);
 		}
 	}
