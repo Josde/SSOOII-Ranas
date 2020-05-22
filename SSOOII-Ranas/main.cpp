@@ -25,7 +25,6 @@ BOOL(*INICIORANAS)(int, int*, int*, int*, int, TIPO_CRIAR);
 BOOL(*PARTORANAS)(int);
 BOOL(*PUEDOSALTAR)(int, int, int);
 void(*PRINTMSG)(char*);
-static void nlog(char* str, ...);
 void liberarPIDActual();
 void guardarPID(DWORD pid);
 void func_criar(int i);
@@ -36,10 +35,7 @@ HANDLE semNacidas;
 HANDLE semSalvadas;
 HANDLE semPerdidas;
 HANDLE eventoFinalizacion;
-HANDLE eventoMovimientoTronco[7];
-CRITICAL_SECTION SC_PRIMERMOVIMIENTO[4];
 HANDLE semPrimerMovimiento[4];
-CRITICAL_SECTION SC_SALTORANAS;
 HANDLE SEM_SALTORANAS;
 CRITICAL_SECTION SC_ARRAYPID;
 HANDLE semPosiciones;
@@ -67,8 +63,7 @@ datosCompartidos datosCompartida;
 int main(int argc, char* argv[])
 {	
 	int direcciones[2] = { DERECHA, IZQUIERDA };
-	//int vectorTroncos[7] = { 6,7,8,9,10,11,12 };
-	int vectorTroncos[7] = { 11,11,11,11,11,11,11 };
+	int vectorTroncos[7];
 	int vectorAgua[7] = { 7,6,5,4,3,2,1 };
 	int velocidad, tmedio;
 	int temp;
@@ -78,13 +73,6 @@ int main(int argc, char* argv[])
 		vectorTroncos[x] = 2 * (rand() % 11 + 1);
 		temp = rand() % 2;
 		vectorDirs[x] = direcciones[temp];
-		/*if (temp == DERECHA) {
-			nlog((char*)"VectorTroncos [%d]: DERECHA", x);
-		}
-		else {
-			nlog((char *)"VectorTroncos [%d]: IZQUIERDA", x);
-		}
-		*/
 	}
 
 	datosCompartida.contadorSalvadas = 0;
@@ -110,13 +98,12 @@ int main(int argc, char* argv[])
 		printf("<velocidad> debe estar entre %d y %d.\n", MIN_VELOCIDAD, MAX_VELOCIDAD);
 		return 6;
 	}
-	else if (tmedio <= MIN_TMEDIO) {
+	else if (tmedio < MIN_TMEDIO) {
 		printf("<tiempo medio> debe ser mayor que %d.\n", MIN_TMEDIO);
 		return 7;
 	}
 
 	//INICIALIZACION IPCS
-	InitializeCriticalSection(&SC_SALTORANAS);
 	InitializeCriticalSection(&SC_ARRAYPID);
 	eventoFinalizacion = CreateEvent(NULL, TRUE, FALSE, NULL);
 	semNacidas = CreateSemaphore(NULL, 1, 1, NULL);
@@ -124,12 +111,8 @@ int main(int argc, char* argv[])
 	semSalvadas = CreateSemaphore(NULL, 1, 1, NULL);
 	semProcesos = CreateSemaphore(NULL, NUM_PROCESOS, NUM_PROCESOS, NULL);
 	SEM_SALTORANAS = CreateSemaphore(NULL, 1, 1, NULL);
-	for (int i = 0; i < 7; i++) {
-		eventoMovimientoTronco[i] = CreateEvent(NULL, TRUE, FALSE, NULL);
-	}
 	for (int i = 0; i < 4; i++) {
 		semPrimerMovimiento[i] = CreateSemaphore(NULL, 1, 1, NULL);
-		InitializeCriticalSection(&(SC_PRIMERMOVIMIENTO[i]));
 	}
 
 
@@ -198,35 +181,32 @@ int main(int argc, char* argv[])
 	INICIORANAS(velocidad, vectorTroncos, vectorAgua, vectorDirs, tmedio, func_criar);
 	CreateThread(NULL, 0, manejadorTiempo, (LPVOID)TIEMPO, NULL, NULL);
 	ret = CreateThread(NULL, 0, manejadorTroncos, NULL, NULL, NULL);
-	guardarPID(GetThreadId(ret));
+	if (ret != NULL) guardarPID(GetThreadId(ret));
+	
 	
 	WaitForSingleObject(eventoFinalizacion, INFINITE);
 	for (int i = 0; i < NUM_PROCESOS * 2; i++) {
 		if (datosCompartida.arrayPID[i] != -1) {
-			//nlog((char *)"Esperando por el hilo 0x%x", GetThreadId(datosCompartida.arrayPID[i]));
 			WaitForSingleObject(OpenThread(THREAD_ALL_ACCESS, TRUE, datosCompartida.arrayPID[i]), INFINITE);
-			//nlog((char*)"Espera finalizada");
 		}
 	}
-	//nlog((char*)"Fin de esperas");
 	FINRANAS();
 	COMPROBARESTADISTICAS(datosCompartida.contadorNacidas, datosCompartida.contadorSalvadas, datosCompartida.contadorMuertas);
 	if (semProcesos != NULL) CloseHandle(semProcesos);
 	if (semNacidas != NULL) CloseHandle(semNacidas);
 	if (semPerdidas != NULL) CloseHandle(semPerdidas);
+	if (SEM_SALTORANAS != NULL) CloseHandle(SEM_SALTORANAS);
 	for (int i = 0; i < 4; i++) {
 		if (semPrimerMovimiento[i] != NULL)
 			CloseHandle(semPrimerMovimiento[i]);
 	}
 
 	if (eventoFinalizacion != NULL) CloseHandle(eventoFinalizacion);
-	DeleteCriticalSection(&SC_SALTORANAS);
 	FreeLibrary(libreria);
-	nlog((char*)"Funcionamiento correcto.");
 	return 0;
 }
 DWORD WINAPI manejadorTroncos(LPVOID i) {
-	int j, ultimoEvento = 0, k;
+	int j, k;
 	while (1) {
 		for (j = 0; j < 7; j++) {
 			if (WaitForSingleObject(eventoFinalizacion, 0) == WAIT_OBJECT_0) { // La macro indica que el evento está señalado
@@ -234,16 +214,7 @@ DWORD WINAPI manejadorTroncos(LPVOID i) {
 				liberarPIDActual();
 				return 0;
 			}
-			//EnterCriticalSection(&SC_SALTORANAS);
 			WaitForSingleObject(SEM_SALTORANAS, INFINITE);
-			/*
-			if (vectorDirs[j] == DERECHA) {
-				nlog((char *)"Moviendo tronco %d hacia la DERECHA.", j);
-			}
-			else {
-				nlog((char*)"Moviendo tronco %d hacia la IZQUIERDA.", j);
-			}
-			*/
 			AVANCETRONCOS(j);
 			for (k = 0; k < NUM_PROCESOS * 2; k++) {
 				if (datosCompartida.arrayPosiciones[k].x < 0 && datosCompartida.arrayPosiciones[k].y < 0) {
@@ -252,16 +223,14 @@ DWORD WINAPI manejadorTroncos(LPVOID i) {
 				if (datosCompartida.arrayPosiciones[k].y == ((6 - j) + FILA_PRIMER_TRONCO)) {
 					if (vectorDirs[j] == DERECHA) {
 						datosCompartida.arrayPosiciones[k].x += 1;
-						//nlog((char*)"Moviendo rana de [%d, %d] a [%d, %d]", datosCompartida.arrayPosiciones[k].x-1, datosCompartida.arrayPosiciones[k].y, datosCompartida.arrayPosiciones[k].x, datosCompartida.arrayPosiciones[k].y);
+						
 					}
 					else {
 						datosCompartida.arrayPosiciones[k].x -= 1;
-						//nlog((char*)"Moviendo rana de [%d, %d] a [%d, %d]", datosCompartida.arrayPosiciones[k].x + 1, datosCompartida.arrayPosiciones[k].y, datosCompartida.arrayPosiciones[k].x, datosCompartida.arrayPosiciones[k].y);
 					}
 				}
 			}
 			ReleaseSemaphore(SEM_SALTORANAS, 1, NULL);
-			//LeaveCriticalSection(&SC_SALTORANAS);
 			PAUSA();
 		}
 	}
@@ -278,15 +247,15 @@ void func_criar(int i) {
 	}
 	WaitForSingleObject(semProcesos, INFINITE);
 	WaitForSingleObject(semPrimerMovimiento[i], INFINITE);
-	//EnterCriticalSection(&(SC_PRIMERMOVIMIENTO[i]));
-	//nlog((char*)"Entrando en seccion critica %d", i);
+	
 	if (PARTORANAS(i)) {
-		//nlog((char*)"Pariendo hijo en %d", i);
 		WaitForSingleObject(semNacidas, INFINITE);
 		datosCompartida.contadorNacidas += 1;
 		ReleaseSemaphore(semNacidas, 1, NULL);
 		HANDLE hija = CreateThread(NULL, 0, bucleRanasHija, (LPVOID)i, 0, NULL);
-		guardarPID(GetThreadId(hija));
+		if (hija != NULL) {
+			guardarPID(GetThreadId(hija));
+		}
 		if (hija == NULL) {
 			PERROR("func_criar: CreateThread: hija[%d]", i);
 		}
@@ -319,7 +288,6 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 		}
 		rnd = rand() % 2;
 		WaitForSingleObject(SEM_SALTORANAS, INFINITE);
-		//EnterCriticalSection(&SC_SALTORANAS);
 		if (datosCompartida.arrayPosiciones[indicePosicion].x < POSX_MIN || datosCompartida.arrayPosiciones[indicePosicion].x > POSX_MAX) {
 			ReleaseSemaphore(SEM_SALTORANAS, 1, NULL);
 			WaitForSingleObject(semPerdidas, INFINITE);
@@ -327,7 +295,6 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 			ReleaseSemaphore(semPerdidas, 1, NULL);
 			datosCompartida.arrayPosiciones[indicePosicion].x = -1;
 			datosCompartida.arrayPosiciones[indicePosicion].y = -1;
-			//LeaveCriticalSection(&SC_SALTORANAS);
 			ReleaseSemaphore(semProcesos, 1, NULL);
 			liberarPIDActual();
 			ExitThread(0);
@@ -338,12 +305,9 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 			PAUSA();
 			AVANCERANAFIN(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y);
 			ReleaseSemaphore(SEM_SALTORANAS, 1, NULL);
-			//LeaveCriticalSection(&SC_SALTORANAS);
 			if (esPrimerMovimiento) {
-				//LeaveCriticalSection(&(SC_PRIMERMOVIMIENTO[(int)i]));
 				ReleaseSemaphore(semPrimerMovimiento[(int)i], 1, NULL);
 				esPrimerMovimiento = FALSE;
-				//nlog((char*)"Se ha salido de seccion critica %d", (int)i);
 			}
 		}
 		else if (PUEDOSALTAR(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y, dirs[rnd])) {
@@ -351,7 +315,6 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 			AVANCERANA(&(datosCompartida.arrayPosiciones[indicePosicion].x), &datosCompartida.arrayPosiciones[indicePosicion].y, dirs[rnd]);
 			PAUSA();
 			AVANCERANAFIN(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y);
-			//LeaveCriticalSection(&SC_SALTORANAS);
 			ReleaseSemaphore(SEM_SALTORANAS, 1, NULL);
 		}
 		else if (PUEDOSALTAR(datosCompartida.arrayPosiciones[indicePosicion].x, datosCompartida.arrayPosiciones[indicePosicion].y, dirs[1 - rnd])) {
@@ -362,7 +325,6 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 			ReleaseSemaphore(SEM_SALTORANAS, 1, NULL);
 		}
 		else {
-			//LeaveCriticalSection(&SC_SALTORANAS);
 			ReleaseSemaphore(SEM_SALTORANAS, 1, NULL);
 			PAUSA();
 		}
@@ -379,26 +341,11 @@ DWORD WINAPI bucleRanasHija(LPVOID i) {
 	}
 }
 
-static void nlog(char* str, ...)
-{
-	HWND notepad, edit;
-	va_list ap;
-	char buf[256];
-	notepad = FindWindow(NULL, "*Sin título: Bloc de notas");
-	if (notepad == NULL) return;
-	edit = FindWindowEx(notepad, NULL, "EDIT", NULL);
-	va_start(ap, str);
-	vsprintf(buf, str, ap);
-	va_end(ap);
-	strcat(buf, "\r\n");
-	SendMessage(edit, EM_REPLACESEL, TRUE, (LPARAM)buf);
-}
 
 void liberarPIDActual() {
 	EnterCriticalSection(&SC_ARRAYPID);
 	for (int i = 0; i < NUM_PROCESOS * 2; i++) {
 		if (datosCompartida.arrayPID[i] == GetCurrentThreadId()) {
-			nlog((char *)"Liberado PID 0x%x", GetCurrentThreadId());
 			datosCompartida.arrayPID[i] = -1;
 			break;
 		}
