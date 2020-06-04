@@ -1,3 +1,8 @@
+/*
+* Práctica 2 SSOOII 2020: Ranas
+* Jorge Cruz García
+* Francisco Javier Gallego Lahera
+*/
 #include <stdlib.h>
 #include "stdio.h"
 #include "windows.h"
